@@ -1,0 +1,75 @@
+{
+    "subject": 10,
+    "timestamp": "2025-10-13 14:31:54",
+    "overall": {
+        "accuracy": 96.55862603305785,
+        "precision_macro": 98.45001192066518,
+        "recall_macro": 95.6907876961222,
+        "f1_macro": 96.93911201658058,
+        "precision_weighted": 96.67491498237219,
+        "recall_weighted": 96.55862603305785,
+        "f1_weighted": 96.50529686948147,
+        "cohen_kappa": 0.9583093029853259,
+        "top3_accuracy": 99.87086776859503,
+        "top5_accuracy": 99.93543388429752
+    },
+    "emg_branch": {
+        "accuracy": 4.254907024793388,
+        "precision_macro": 1.8388071494688307,
+        "recall_macro": 2.59190771988457,
+        "f1_macro": 1.619537492653394,
+        "precision_weighted": 15.3563973111691,
+        "recall_weighted": 4.254907024793388,
+        "f1_weighted": 5.298839201841778,
+        "cohen_kappa": 0.0035111600420593136,
+        "top3_accuracy": null,
+        "top5_accuracy": null
+    },
+    "imu_branch": {
+        "accuracy": 2.744059917355372,
+        "precision_macro": 2.030279548358275,
+        "recall_macro": 1.9900883747870575,
+        "f1_macro": 0.9652775680250186,
+        "precision_weighted": 23.585302557027138,
+        "recall_weighted": 2.744059917355372,
+        "f1_weighted": 3.1789721039550725,
+        "cohen_kappa": 0.004682217264096344,
+        "top3_accuracy": null,
+        "top5_accuracy": null
+    },
+    "per_exercise": {
+        "E1": {
+            "fusion_acc": 97.98016893132574,
+            "emg_acc": 3.2684539111274327,
+            "imu_acc": 2.1116415717958135,
+            "n_samples": 5446
+        },
+        "E2": {
+            "fusion_acc": 95.26372443487621,
+            "emg_acc": 5.1803013993541445,
+            "imu_acc": 2.704520990312164,
+            "n_samples": 7432
+        },
+        "E3": {
+            "fusion_acc": 97.27969348659003,
+            "emg_acc": 3.67816091954023,
+            "imu_acc": 4.176245210727969,
+            "n_samples": 2610
+        }
+    },
+    "model_efficiency": {
+        "total_params": 1778774,
+        "trainable_params": 1778774,
+        "total_params_M": 1.778774,
+        "emg_params": 735874,
+        "imu_params": 836482,
+        "fusion_params": 206418,
+        "flops_G": null,
+        "inference_time_ms": 2.6520514488220215,
+        "inference_time_std_ms": 0.31315720025492383,
+        "single_sample_time_ms": 0.16575321555137634,
+        "fps": 6033.0654622506745,
+        "batch_size": 16,
+        "device": "cuda:0"
+    }
+}

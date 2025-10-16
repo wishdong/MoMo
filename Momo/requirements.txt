@@ -1,0 +1,26 @@
+# Momo项目依赖包 - EMG+IMU多模态手势识别
+# 使用Python 3.9，确保版本兼容性
+
+# 深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# 科学计算
+numpy>=1.21.0
+scipy>=1.7.0
+scikit-learn>=1.0.0
+
+# 数据处理
+h5py>=3.7.0
+
+# 可视化和监控
+matplotlib>=3.5.0
+tensorboard>=2.8.0
+
+# 实验管理和监控
+swanlab>=0.6.0   # SwanLab实验管理平台
+
+# 其他可能需要的包
+pathlib2>=2.3.0  # 兼容性支持
+tqdm>=4.62.0     # 进度条显示

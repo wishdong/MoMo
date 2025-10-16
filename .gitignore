@@ -1,0 +1,32 @@
+# Python
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# Data files (too large for GitHub)
+*.h5
+*.zip
+*.pkl
+
+# macOS
+__MACOSX/
+.DS_Store
+
+# Data directories
+Momo/data/
+Momo/processed_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Model checkpoints
+*.pth
+*.ckpt
+experiments/
+logs/
+
