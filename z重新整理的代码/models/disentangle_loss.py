@@ -43,11 +43,15 @@ class DisentangleLoss(nn.Module):
             - d_shared: 共享表征维度
             - d_private: 独特表征维度
     """
-    def __init__(self, config):
+    def __init__(self, config, emg_feature_dim=None, imu_feature_dim=None):
         super(DisentangleLoss, self).__init__()
         
         # 保存配置
         self.config = config
+        
+        # 特征维度（如果未提供，使用DB2的默认值）
+        self.emg_feature_dim = emg_feature_dim if emg_feature_dim is not None else 32*12
+        self.imu_feature_dim = imu_feature_dim if imu_feature_dim is not None else 32*36
         self.lambda1 = config.lambda1
         self.lambda2 = config.lambda2
         self.lambda3 = config.lambda3
@@ -86,17 +90,17 @@ class DisentangleLoss(nn.Module):
         
         # I(H1;H2|Z): 使用ConditionalCLUB（方案A：条件独立性）
         if self.use_method_a:
-            # H1维度: 32*12=384, H2维度: 32*36=1152, Z维度: 128
+            # 使用动态维度
             self.cond_club_z1 = ConditionalCLUB(
-                x_dim=32*12,       # H1维度
-                y_dim=32*36,       # H2维度
-                z_dim=config.d_shared,  # Z1维度
+                x_dim=self.emg_feature_dim,  # H1维度（动态）
+                y_dim=self.imu_feature_dim,  # H2维度（动态）
+                z_dim=config.d_shared,       # Z1维度
                 hidden_dim=256
             )
             self.cond_club_z2 = ConditionalCLUB(
-                x_dim=32*12,       # H1维度
-                y_dim=32*36,       # H2维度
-                z_dim=config.d_shared,  # Z2维度
+                x_dim=self.emg_feature_dim,  # H1维度（动态）
+                y_dim=self.imu_feature_dim,  # H2维度（动态）
+                z_dim=config.d_shared,       # Z2维度
                 hidden_dim=256
             )
         

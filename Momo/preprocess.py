@@ -14,9 +14,9 @@ from pathlib import Path
 
 
 class NinaproDB2Preprocessor:
-    """NinaproDB2数据集预处理器"""
+    """Ninapro数据集预处理器（支持DB2/DB3/DB5/DB7）"""
     
-    def __init__(self, data_root, subjects=[10, 23, 36], fs=2000):
+    def __init__(self, data_root, subjects=[10, 23, 36], fs=2000, dataset='DB2'):
         """
         初始化预处理器
         
@@ -24,10 +24,12 @@ class NinaproDB2Preprocessor:
             data_root: 数据根目录
             subjects: 受试者列表
             fs: 采样率 (Hz)
+            dataset: 数据集名称 ('DB2', 'DB3', 'DB5', 'DB7')
         """
         self.data_root = Path(data_root)
         self.subjects = subjects
         self.fs = fs
+        self.dataset = dataset
         
         # 窗口参数
         self.window_size = 200  # ms
@@ -42,9 +44,34 @@ class NinaproDB2Preprocessor:
         self.train_reps = [1, 2, 3, 4, 6]  # 训练集（重复1, 2, 3, 4, 6）
         self.test_reps = [2, 5]             # 测试集（重复2, 5）
         
-        print(f"初始化预处理器 - 采样率: {self.fs} Hz")
+        # 根据数据集设置目录格式和练习数量
+        self._setup_dataset_config()
+        
+        print(f"初始化预处理器 - 数据集: {self.dataset}")
+        print(f"采样率: {self.fs} Hz")
         print(f"窗口大小: {self.window_size} ms ({self.window_samples} samples)")
         print(f"窗口步长: {self.window_step} ms ({self.step_samples} samples)")
+    
+    def _setup_dataset_config(self):
+        """根据数据集类型设置配置"""
+        if self.dataset == 'DB2':
+            self.subject_prefix = 'DB2_s'  # DB2_s10
+            self.file_prefix = 'S'          # S10_E1_A1.mat
+            self.exercises = [1, 2, 3]
+        elif self.dataset == 'DB3':
+            self.subject_prefix = 'DB3_s'  # DB3_s2
+            self.file_prefix = 'S'          # S2_E1_A1.mat
+            self.exercises = [1, 2, 3]
+        elif self.dataset == 'DB5':
+            self.subject_prefix = 's'       # s1
+            self.file_prefix = 'S'          # S1_E1_A1.mat
+            self.exercises = [1, 2, 3]      # DB5包含E1, E2, E3
+        elif self.dataset == 'DB7':
+            self.subject_prefix = 'Subject_'  # Subject_10
+            self.file_prefix = 'S'            # S10_E1_A1.mat
+            self.exercises = [1, 2]           # DB7只有E1和E2
+        else:
+            raise ValueError(f"不支持的数据集: {self.dataset}")
         
     def load_subject_data(self, subject):
         """
@@ -61,12 +88,13 @@ class NinaproDB2Preprocessor:
         """
         print(f"\n加载受试者 S{subject} 数据...")
         
-        subject_dir = self.data_root / f"DB2_s{subject}"
+        # 根据数据集类型构建目录路径
+        subject_dir = self.data_root / f"{self.subject_prefix}{subject}"
         emg_list, imu_list, label_list, rep_list = [], [], [], []
         
-        # 加载3个练习（E1, E2, E3）
-        for exercise in [1, 2, 3]:
-            mat_file = subject_dir / f"S{subject}_E{exercise}_A1.mat"
+        # 加载练习数据（根据数据集类型）
+        for exercise in self.exercises:
+            mat_file = subject_dir / f"{self.file_prefix}{subject}_E{exercise}_A1.mat"
             
             if not mat_file.exists():
                 print(f"  警告: 文件不存在 {mat_file}")
@@ -215,17 +243,21 @@ class NinaproDB2Preprocessor:
         2. 全波整流
         3. RMS平滑
         """
-        print("  处理EMG: 带通滤波 -> 整流 -> RMS平滑")
+        print("  处理EMG: ", end='', flush=True)
         
         # 1. 带通滤波
+        print("带通滤波...", end='', flush=True)
         emg_filtered = self.bandpass_filter(emg, lowcut=10, highcut=500)
         
         # 2. 整流
+        print("整流...", end='', flush=True)
         emg_rectified = self.rectify_emg(emg_filtered)
         
         # 3. RMS平滑
+        print("RMS平滑...", end='', flush=True)
         emg_smoothed = self.smooth_emg_rms(emg_rectified, 
                                            window_ms=200, step_ms=50)
+        print("完成", flush=True)
         
         return emg_smoothed
     
@@ -237,13 +269,16 @@ class NinaproDB2Preprocessor:
         1. 带通滤波 (10-500 Hz)
         2. 高通滤波去趋势 (0.5 Hz)
         """
-        print("  处理IMU: 带通滤波 -> 去趋势")
+        print("  处理IMU: ", end='', flush=True)
         
         # 1. 带通滤波
+        print("带通滤波...", end='', flush=True)
         imu_filtered = self.bandpass_filter(imu, lowcut=10, highcut=500)
         
         # 2. 去趋势（去除重力分量）
+        print("去趋势...", end='', flush=True)
         imu_detrended = self.highpass_filter(imu_filtered, cutoff=0.5)
+        print("完成", flush=True)
         
         return imu_detrended
     
@@ -260,7 +295,7 @@ class NinaproDB2Preprocessor:
         返回:
             segments: 字典包含训练/测试的EMG、IMU和标签
         """
-        print(f"  分割数据: 窗口={self.window_size}ms, 步长={self.window_step}ms")
+        print(f"  分割数据: 窗口={self.window_size}ms, 步长={self.window_step}ms", end='', flush=True)
         
         train_emg, train_imu, train_labels = [], [], []
         test_emg, test_imu, test_labels = [], [], []
@@ -276,10 +311,13 @@ class NinaproDB2Preprocessor:
             end = min(len(labels), idx + self.transition_margin)
             transition_mask[start:end] = True
         
-        print(f"    排除过渡样本数: {np.sum(transition_mask)} / {len(labels)}")
+        print(f" (排除过渡样本: {np.sum(transition_mask)}/{len(labels)})", end='', flush=True)
         
         # 滑动窗口分割
         n_samples = emg.shape[0]
+        total_windows = (n_samples - self.window_samples) // self.step_samples + 1
+        print(f" 预计窗口数: {total_windows}...", end='', flush=True)
+        
         for start in range(0, n_samples - self.window_samples + 1, self.step_samples):
             end = start + self.window_samples
             
@@ -319,7 +357,7 @@ class NinaproDB2Preprocessor:
             }
         }
         
-        print(f"    训练样本: {len(train_labels)}, 测试样本: {len(test_labels)}")
+        print(f" 完成 (训练:{len(train_labels)}, 测试:{len(test_labels)})", flush=True)
         
         return segments
     
@@ -357,35 +395,39 @@ class NinaproDB2Preprocessor:
         return train_normalized, test_normalized, scaler
     
     
-    def process_all_subjects(self):
+    def process_single_subject(self, subject, output_dir):
         """
-        处理所有受试者的数据（分别存储每个受试者）
+        处理单个受试者的数据并立即保存
         
+        参数:
+            subject: 受试者编号
+            output_dir: 输出目录
+            
         返回:
-            processed_data: 包含每个受试者数据的字典
+            success: 是否处理成功
         """
-        # 存储每个受试者的数据
-        subjects_data = {}
-        
-        # 对每个受试者进行处理
-        for subject in self.subjects:
+        try:
             print(f"\n{'='*60}")
-            print(f"处理受试者 S{subject}")
+            print(f"处理受试者 S{subject} [{self.dataset}]")
             print(f"{'='*60}")
             
             # 加载数据
             emg_list, imu_list, label_list, rep_list = self.load_subject_data(subject)
             
+            if not emg_list:
+                print(f"  错误: 受试者 S{subject} 没有有效数据")
+                return False
+            
             # 存储当前受试者的数据
             subject_train_emg, subject_train_imu, subject_train_labels = [], [], []
             subject_test_emg, subject_test_imu, subject_test_labels = [], [], []
-            subject_train_exercises, subject_test_exercises = [], []  # 新增：记录exercise
+            subject_train_exercises, subject_test_exercises = [], []
             
             # 处理每个练习
             for ex_idx, (emg, imu, labels, reps) in enumerate(
                 zip(emg_list, imu_list, label_list, rep_list), 1
             ):
-                print(f"\n练习 E{ex_idx}:")
+                print(f"\n练习 E{self.exercises[ex_idx-1]}:")
                 
                 # EMG预处理
                 emg_processed = self.preprocess_emg(emg)
@@ -401,79 +443,178 @@ class NinaproDB2Preprocessor:
                 subject_train_emg.append(segments['train']['emg'])
                 subject_train_imu.append(segments['train']['imu'])
                 subject_train_labels.append(segments['train']['labels'])
-                # 记录exercise信息（1=E1, 2=E2, 3=E3）
-                subject_train_exercises.append(np.full(len(segments['train']['labels']), ex_idx, dtype=np.int32))
+                subject_train_exercises.append(np.full(len(segments['train']['labels']), 
+                                                      self.exercises[ex_idx-1], dtype=np.int32))
                 
                 subject_test_emg.append(segments['test']['emg'])
                 subject_test_imu.append(segments['test']['imu'])
                 subject_test_labels.append(segments['test']['labels'])
-                subject_test_exercises.append(np.full(len(segments['test']['labels']), ex_idx, dtype=np.int32))
+                subject_test_exercises.append(np.full(len(segments['test']['labels']), 
+                                                     self.exercises[ex_idx-1], dtype=np.int32))
             
             # 合并当前受试者的所有练习
             subject_train_emg = np.concatenate(subject_train_emg, axis=0)
             subject_train_imu = np.concatenate(subject_train_imu, axis=0)
             subject_train_labels = np.concatenate(subject_train_labels, axis=0)
-            subject_train_exercises = np.concatenate(subject_train_exercises, axis=0)  # 新增
+            subject_train_exercises = np.concatenate(subject_train_exercises, axis=0)
             
             subject_test_emg = np.concatenate(subject_test_emg, axis=0)
             subject_test_imu = np.concatenate(subject_test_imu, axis=0)
             subject_test_labels = np.concatenate(subject_test_labels, axis=0)
-            subject_test_exercises = np.concatenate(subject_test_exercises, axis=0)  # 新增
+            subject_test_exercises = np.concatenate(subject_test_exercises, axis=0)
             
             print(f"\n受试者 S{subject} 数据统计:")
             print(f"  训练样本: {len(subject_train_labels)}")
             print(f"  测试样本: {len(subject_test_labels)}")
             
             # 归一化（每个受试者独立归一化）
-            print(f"  归一化受试者 S{subject} 数据...")
+            print(f"  归一化数据: ", end='', flush=True)
+            print(f"EMG...", end='', flush=True)
             subject_train_emg_norm, subject_test_emg_norm, subject_emg_scaler = self.normalize_data(
                 subject_train_emg, subject_test_emg
             )
+            print(f"IMU...", end='', flush=True)
             subject_train_imu_norm, subject_test_imu_norm, subject_imu_scaler = self.normalize_data(
                 subject_train_imu, subject_test_imu
             )
+            print(f"完成", flush=True)
             
-            # 保存受试者数据
-            subjects_data[subject] = {
-                'train': {
-                    'emg': subject_train_emg_norm,
-                    'imu': subject_train_imu_norm,
-                    'labels': subject_train_labels,
-                    'exercises': subject_train_exercises  # 新增
-                },
-                'test': {
-                    'emg': subject_test_emg_norm,
-                    'imu': subject_test_imu_norm,
-                    'labels': subject_test_labels,
-                    'exercises': subject_test_exercises  # 新增
-                },
-                'scalers': {
-                    'emg': subject_emg_scaler,
-                    'imu': subject_imu_scaler
-                }
-            }
+            # 立即保存当前受试者的数据
+            self.save_single_subject(
+                subject=subject,
+                train_emg=subject_train_emg_norm,
+                train_imu=subject_train_imu_norm,
+                train_labels=subject_train_labels,
+                train_exercises=subject_train_exercises,
+                test_emg=subject_test_emg_norm,
+                test_imu=subject_test_imu_norm,
+                test_labels=subject_test_labels,
+                test_exercises=subject_test_exercises,
+                emg_scaler=subject_emg_scaler,
+                imu_scaler=subject_imu_scaler,
+                output_dir=output_dir
+            )
+            
+            print(f"✓ 受试者 S{subject} 处理完成！\n")
+            return True
+            
+        except Exception as e:
+            print(f"✗ 受试者 S{subject} 处理失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def process_all_subjects(self, output_dir):
+        """
+        处理所有受试者的数据（逐个处理并保存）
         
-        # 组织最终数据
-        processed_data = {
-            'subjects_data': subjects_data,  # 每个受试者的独立数据
-            'metadata': {
-                'subjects': self.subjects,
-                'fs': self.fs,
-                'window_size_ms': self.window_size,
-                'window_step_ms': self.window_step,
-                'n_emg_channels': 12,
-                'n_imu_channels': 36,
-                'n_classes': 50,  # 固定50个类别
-                'class_names': self._get_class_names()
-            }
-        }
+        参数:
+            output_dir: 输出目录
+        """
+        print(f"\n{'='*60}")
+        print(f"批量处理 {self.dataset} 数据集")
+        print(f"受试者列表: {self.subjects}")
+        print(f"总计: {len(self.subjects)} 个受试者")
+        print(f"{'='*60}")
         
-        return processed_data
+        success_count = 0
+        failed_subjects = []
+        
+        for idx, subject in enumerate(self.subjects, 1):
+            print(f"\n[{idx}/{len(self.subjects)}] ", end='', flush=True)
+            if self.process_single_subject(subject, output_dir):
+                success_count += 1
+            else:
+                failed_subjects.append(subject)
+        
+        print(f"\n{'='*60}")
+        print(f"批量处理完成！")
+        print(f"成功: {success_count}/{len(self.subjects)}")
+        if failed_subjects:
+            print(f"失败的受试者: {failed_subjects}")
+        print(f"{'='*60}\n")
     
     def _get_class_names(self):
         """返回50个类别的名称（简化版）"""
         # 这里返回简化的类别标识
         return [f"Gesture_{i}" if i > 0 else "Rest" for i in range(50)]
+    
+    def save_single_subject(self, subject, train_emg, train_imu, train_labels, train_exercises,
+                           test_emg, test_imu, test_labels, test_exercises,
+                           emg_scaler, imu_scaler, output_dir):
+        """
+        保存单个受试者的数据（HDF5格式）
+        
+        参数:
+            subject: 受试者编号
+            train_emg, train_imu, train_labels, train_exercises: 训练数据
+            test_emg, test_imu, test_labels, test_exercises: 测试数据
+            emg_scaler, imu_scaler: 归一化scaler
+            output_dir: 输出目录
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # 保存训练集
+        print(f"  保存文件: ", end='', flush=True)
+        train_file = output_path / f'S{subject}_train.h5'
+        with h5py.File(train_file, 'w') as f:
+            f.create_dataset('emg', data=train_emg, compression='gzip', compression_opts=4)
+            f.create_dataset('imu', data=train_imu, compression='gzip', compression_opts=4)
+            f.create_dataset('labels', data=train_labels, compression='gzip', compression_opts=4)
+            f.create_dataset('exercises', data=train_exercises, compression='gzip', compression_opts=4)
+            # 保存属性
+            f.attrs['dataset'] = self.dataset
+            f.attrs['subject'] = subject
+            f.attrs['n_samples'] = len(train_labels)
+            f.attrs['window_size'] = train_emg.shape[1]
+            f.attrs['n_emg_channels'] = train_emg.shape[2]
+            f.attrs['n_imu_channels'] = train_imu.shape[2]
+        
+        # 保存测试集
+        test_file = output_path / f'S{subject}_test.h5'
+        with h5py.File(test_file, 'w') as f:
+            f.create_dataset('emg', data=test_emg, compression='gzip', compression_opts=4)
+            f.create_dataset('imu', data=test_imu, compression='gzip', compression_opts=4)
+            f.create_dataset('labels', data=test_labels, compression='gzip', compression_opts=4)
+            f.create_dataset('exercises', data=test_exercises, compression='gzip', compression_opts=4)
+            # 保存属性
+            f.attrs['dataset'] = self.dataset
+            f.attrs['subject'] = subject
+            f.attrs['n_samples'] = len(test_labels)
+            f.attrs['window_size'] = test_emg.shape[1]
+            f.attrs['n_emg_channels'] = test_emg.shape[2]
+            f.attrs['n_imu_channels'] = test_imu.shape[2]
+        
+        print(f"训练集({len(train_labels)}样本) + 测试集({len(test_labels)}样本) ✓", flush=True)
+        
+        # 保存scaler到metadata文件（追加模式）
+        metadata_file = output_path / 'metadata.pkl'
+        if metadata_file.exists():
+            with open(metadata_file, 'rb') as f:
+                metadata = pickle.load(f)
+        else:
+            metadata = {
+                'subjects_scalers': {},
+                'metadata': {
+                    'dataset': self.dataset,
+                    'fs': self.fs,
+                    'window_size_ms': self.window_size,
+                    'window_step_ms': self.window_step,
+                    'n_emg_channels': 12,
+                    'n_imu_channels': 36,
+                    'n_classes': 50
+                }
+            }
+        
+        # 更新scaler信息
+        metadata['subjects_scalers'][subject] = {
+            'emg': emg_scaler,
+            'imu': imu_scaler
+        }
+        
+        with open(metadata_file, 'wb') as f:
+            pickle.dump(metadata, f)
     
     def save_processed_data(self, processed_data, output_dir):
         """
@@ -599,27 +740,58 @@ class NinaproDB2Preprocessor:
 
 def main():
     """主函数"""
-    # 设置路径
-    data_root = "/home/mlsnrs/data/wrj/MoMo/z重新整理的代码"
-    output_dir = "/home/mlsnrs/data/wrj/MoMo/Momo/processed_data"
+    import argparse
     
-    # 创建预处理器（只处理受试者10）
+    parser = argparse.ArgumentParser(description='Ninapro数据集预处理（支持DB2/DB3/DB5/DB7）')
+    parser.add_argument('--dataset', type=str, required=True, 
+                       choices=['DB2', 'DB3', 'DB5', 'DB7'],
+                       help='数据集名称')
+    parser.add_argument('--subjects', type=str, required=True,
+                       help='受试者列表，用逗号分隔（如: 1,2,3 或 1-10）')
+    parser.add_argument('--data_root', type=str, 
+                       default='/home/xuweishi/KBS25/MoMo/Momo/data',
+                       help='数据根目录')
+    parser.add_argument('--output_dir', type=str,
+                       default='/home/xuweishi/KBS25/MoMo/Momo/processed_data',
+                       help='输出目录')
+    parser.add_argument('--fs', type=int, default=2000,
+                       help='采样率 (Hz)')
+    
+    args = parser.parse_args()
+    
+    # 解析受试者列表
+    subjects = []
+    for part in args.subjects.split(','):
+        if '-' in part:
+            start, end = map(int, part.split('-'))
+            subjects.extend(range(start, end + 1))
+        else:
+            subjects.append(int(part))
+    
+    # 设置输出路径（按数据集分类）
+    output_dir = Path(args.output_dir) / args.dataset
+    
+    print(f"\n{'='*60}")
+    print(f"Ninapro {args.dataset} 数据预处理")
+    print(f"{'='*60}")
+    print(f"数据根目录: {args.data_root}")
+    print(f"输出目录: {output_dir}")
+    print(f"受试者: {subjects}")
+    print(f"采样率: {args.fs} Hz")
+    print(f"{'='*60}\n")
+    
+    # 创建预处理器
     preprocessor = NinaproDB2Preprocessor(
-        data_root=data_root,
-        subjects=[10],  # 只处理受试者10
-        fs=2000
+        data_root=Path(args.data_root) / args.dataset,
+        subjects=subjects,
+        fs=args.fs,
+        dataset=args.dataset
     )
     
-    # 处理所有受试者数据
-    processed_data = preprocessor.process_all_subjects()
+    # 处理所有受试者数据（逐个处理并保存）
+    preprocessor.process_all_subjects(output_dir)
     
-    # 保存处理后的数据
-    preprocessor.save_processed_data(processed_data, output_dir)
-    
-    # 打印数据集基本信息
-    preprocessor.print_dataset_info(processed_data)
-    
-    print("数据预处理完成！")
+    print("\n数据预处理完成！")
 
 
 if __name__ == "__main__":

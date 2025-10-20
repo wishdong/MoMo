@@ -7,8 +7,10 @@ __pycache__/
 
 # Data files (too large for GitHub)
 *.h5
+*.hdf5
 *.zip
 *.pkl
+*.mat
 
 # macOS
 __MACOSX/
@@ -24,9 +26,17 @@ Momo/processed_data/
 *.swp
 *.swo
 
-# Model checkpoints
+# Model checkpoints and results (generated during experiments)
 *.pth
+*.pt
 *.ckpt
 experiments/
 logs/
+z重新整理的代码/weights/
+z重新整理的代码/results/
+z重新整理的代码/experiment_logs/
+
+# SwanLab
+wandb/
+swanlab/
 

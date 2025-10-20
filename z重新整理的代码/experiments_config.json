@@ -1,0 +1,124 @@
+{
+  "main_ablation": {
+    "description": "主消融实验（M0-M3）：验证整体有效性",
+    "datasets": ["DB5", "DB7"],
+    "experiments": [
+      {
+        "id": "M0_base",
+        "description": "基础模型",
+        "args": "--save-predictions"
+      },
+      {
+        "id": "M1_disentangle",
+        "description": "解纠缠模型",
+        "args": "--use-disentangle --save-predictions"
+      },
+      {
+        "id": "M3_full",
+        "description": "完整模型（解纠缠+自适应融合）",
+        "args": "--use-adaptive-fusion --save-predictions"
+      }
+    ]
+  },
+  
+  "disentangle_ablation": {
+    "description": "解纠缠损失消融（D0-D3）：验证解纠缠的必要性",
+    "datasets": ["DB5", "DB7"],
+    "experiments": [
+      {
+        "id": "D0_no_loss",
+        "description": "无解纠缠损失（等价于M0）",
+        "args": "--save-predictions"
+      },
+      {
+        "id": "D1_private_only",
+        "description": "只有L_private",
+        "args": "--use-disentangle --alpha 0.5 --beta 0 --save-predictions --experiment_id D1_private_only"
+      },
+      {
+        "id": "D2_shared_only",
+        "description": "只有L_shared",
+        "args": "--use-disentangle --alpha 0 --beta 0.5 --save-predictions --experiment_id D2_shared_only"
+      },
+      {
+        "id": "D3_full_disentangle",
+        "description": "完整解纠缠（等价于M1）",
+        "args": "--use-disentangle --alpha 0.5 --beta 0.5 --save-predictions --experiment_id D3_full_disentangle"
+      }
+    ]
+  },
+  
+  "adaptive_fusion_ablation": {
+    "description": "自适应融合损失消融（FA1-FA4）：验证融合策略的有效性",
+    "datasets": ["DB5", "DB7"],
+    "experiments": [
+      {
+        "id": "FA1_no_constraint",
+        "description": "无约束",
+        "args": "--use-adaptive-fusion --lambda-align 0 --lambda-balance 0 --save-predictions --experiment_id FA1_no_constraint"
+      },
+      {
+        "id": "FA2_align_only",
+        "description": "只有L_align",
+        "args": "--use-adaptive-fusion --lambda-align 0.1 --lambda-balance 0 --save-predictions --experiment_id FA2_align_only"
+      },
+      {
+        "id": "FA3_balance_only",
+        "description": "只有L_balance",
+        "args": "--use-adaptive-fusion --lambda-align 0 --lambda-balance 0.05 --save-predictions --experiment_id FA3_balance_only"
+      },
+      {
+        "id": "FA4_full_adaptive",
+        "description": "完整自适应融合（等价于M3）",
+        "args": "--use-adaptive-fusion --lambda-align 0.1 --lambda-balance 0.05 --save-predictions --experiment_id FA4_full_adaptive"
+      }
+    ]
+  },
+  
+  "full_model_all_datasets": {
+    "description": "完整模型在所有数据集上运行",
+    "datasets": ["DB2", "DB3", "DB5", "DB7"],
+    "experiments": [
+      {
+        "id": "M3_full",
+        "description": "完整模型",
+        "args": "--use-adaptive-fusion --save-predictions"
+      }
+    ]
+  },
+  
+  "hyperparameter_search_alpha_beta": {
+    "description": "超参数网格搜索：alpha和beta的影响",
+    "datasets": ["DB3", "DB5"],
+    "alpha_values": [0.0, 0.1, 0.3, 0.5, 0.7, 1.0],
+    "beta_values": [0.0, 0.1, 0.3, 0.5, 0.7, 1.0],
+    "experiments": "GRID_GENERATED",
+    "note": "36个实验组合，由run_experiments.py自动生成"
+  },
+  
+  "hyperparameter_search_lambda_align": {
+    "description": "超参数搜索：lambda_align的影响",
+    "datasets": ["DB2", "DB3", "DB5"],
+    "fixed_params": "--lambda-balance 0.05",
+    "lambda_align_values": [0.0, 0.01, 0.05, 0.1, 0.2, 0.5],
+    "experiments": "ARRAY_GENERATED"
+  },
+  
+  "hyperparameter_search_lambda_balance": {
+    "description": "超参数搜索：lambda_balance的影响",
+    "datasets": ["DB2", "DB3", "DB5"],
+    "fixed_params": "--lambda-align 0.1",
+    "lambda_balance_values": [0.0, 0.01, 0.05, 0.1, 0.2, 0.5],
+    "experiments": "ARRAY_GENERATED"
+  },
+  
+  "representative_subjects": {
+    "description": "代表性受试者（跨受试者验证）",
+    "note": "每个数据集选择3个代表性受试者（根据实际可用数据）",
+    "DB2_subjects": [10, 20, 30],
+    "DB3_subjects": [2, 6, 11],
+    "DB5_subjects": [1, 5, 10],
+    "DB7_subjects": [3, 7, 11]
+  }
+}
+

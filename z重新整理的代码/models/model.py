@@ -209,9 +209,9 @@ class Classifier(nn.Module):
     def __init__(self, configs, enc_in):
         super(Classifier, self).__init__()
         first, second, third, fourth = configs.channels
-        # 简化：输入 → 128 → 50
+        # 简化：输入 → 128 → num_class（根据数据集动态调整）
         self.MLP1 = nn.Linear(fourth * enc_in * 1, 128)
-        self.MLP2 = nn.Linear(128, 50)
+        self.MLP2 = nn.Linear(128, configs.num_class)  # 修复：使用configs.num_class而非硬编码50
         self.drop1 = nn.Dropout(p=configs.dropout)
         
     def forward(self, x):
@@ -254,11 +254,12 @@ class MultimodalGestureNet(nn.Module):
         # 融合编码器使用统一的配置（两者的channels都一样）
         self.fusion_encoder = FusionEncoder(channels_config=imu_configs.channels)
         
-        # 分类器
-        self.imu_classifier = Classifier(imu_configs, enc_in=36)
-        self.emg_classifier = Classifier(emg_configs, enc_in=12)
+        # 分类器（动态适配通道数）
+        self.imu_classifier = Classifier(imu_configs, enc_in=imu_configs.enc_in)  # 动态
+        self.emg_classifier = Classifier(emg_configs, enc_in=emg_configs.enc_in)  # 动态
         # 融合分类器
-        self.fusion_classifier = Classifier(imu_configs, enc_in=48)  # 36+12
+        fusion_enc_in = imu_configs.enc_in + emg_configs.enc_in  # 动态：DB2=48, DB5=19
+        self.fusion_classifier = Classifier(imu_configs, enc_in=fusion_enc_in)
 
     def forward(self, emg, imu):
         """
@@ -330,37 +331,40 @@ class MultimodalGestureNetWithDisentangle(nn.Module):
         )
         
         # ========== 原有单模态分类器（完全复用）==========
-        self.imu_classifier = Classifier(imu_configs, enc_in=36)
-        self.emg_classifier = Classifier(emg_configs, enc_in=12)
+        self.imu_classifier = Classifier(imu_configs, enc_in=imu_configs.enc_in)
+        self.emg_classifier = Classifier(emg_configs, enc_in=emg_configs.enc_in)
         
         # ========== 新增：解纠缠编码器 ==========
         from .disentangle_modules import SharedEncoder, PrivateEncoder
         
+        # 动态计算输入维度（根据实际通道数）
+        fourth_channel = emg_configs.channels[3]  # 32
+        emg_feature_dim = fourth_channel * emg_configs.enc_in  # 32 * emg_channels
+        imu_feature_dim = fourth_channel * imu_configs.enc_in  # 32 * imu_channels
+        
         # EMG的共享/独特编码器
-        # 输入维度: 32 * 12 = 384
         self.emg_shared_encoder = SharedEncoder(
-            input_dim=32 * 12,
+            input_dim=emg_feature_dim,  # 动态：DB2=384, DB5=512
             output_dim=d_shared,
             hidden_dim=256,
             dropout=dropout
         )
         self.emg_private_encoder = PrivateEncoder(
-            input_dim=32 * 12,
+            input_dim=emg_feature_dim,
             output_dim=d_private,
             hidden_dim=128,
             dropout=dropout
         )
         
         # IMU的共享/独特编码器
-        # 输入维度: 32 * 36 = 1152
         self.imu_shared_encoder = SharedEncoder(
-            input_dim=32 * 36,
+            input_dim=imu_feature_dim,  # 动态：DB2=1152, DB5=96
             output_dim=d_shared,
             hidden_dim=256,
             dropout=dropout
         )
         self.imu_private_encoder = PrivateEncoder(
-            input_dim=32 * 36,
+            input_dim=imu_feature_dim,
             output_dim=d_private,
             hidden_dim=128,
             dropout=dropout
@@ -484,21 +488,26 @@ class MultimodalGestureNetWithAdaptiveFusion(nn.Module):
         )
         
         # ========== 原有单模态分类器（完全复用）==========
-        self.imu_classifier = Classifier(imu_configs, enc_in=36)
-        self.emg_classifier = Classifier(emg_configs, enc_in=12)
+        self.imu_classifier = Classifier(imu_configs, enc_in=imu_configs.enc_in)
+        self.emg_classifier = Classifier(emg_configs, enc_in=emg_configs.enc_in)
         
         # ========== 创新点1：解纠缠编码器 ==========
         from .disentangle_modules import SharedEncoder, PrivateEncoder
         
+        # 动态计算输入维度（根据实际通道数）
+        fourth_channel = emg_configs.channels[3]  # 32
+        emg_feature_dim = fourth_channel * emg_configs.enc_in  # 32 * emg_channels
+        imu_feature_dim = fourth_channel * imu_configs.enc_in  # 32 * imu_channels
+        
         # EMG的共享/独特编码器
         self.emg_shared_encoder = SharedEncoder(
-            input_dim=32 * 12,
+            input_dim=emg_feature_dim,  # 动态：DB2=384, DB5=512
             output_dim=d_shared,
             hidden_dim=256,
             dropout=dropout
         )
         self.emg_private_encoder = PrivateEncoder(
-            input_dim=32 * 12,
+            input_dim=emg_feature_dim,
             output_dim=d_private,
             hidden_dim=128,
             dropout=dropout
@@ -506,13 +515,13 @@ class MultimodalGestureNetWithAdaptiveFusion(nn.Module):
         
         # IMU的共享/独特编码器
         self.imu_shared_encoder = SharedEncoder(
-            input_dim=32 * 36,
+            input_dim=imu_feature_dim,  # 动态：DB2=1152, DB5=96
             output_dim=d_shared,
             hidden_dim=256,
             dropout=dropout
         )
         self.imu_private_encoder = PrivateEncoder(
-            input_dim=32 * 36,
+            input_dim=imu_feature_dim,
             output_dim=d_private,
             hidden_dim=128,
             dropout=dropout
@@ -542,7 +551,7 @@ class MultimodalGestureNetWithAdaptiveFusion(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout),
-            nn.Linear(128, 50)
+            nn.Linear(128, imu_configs.num_class)  # 修复：使用configs.num_class而非硬编码50
         )
         
         # 初始化

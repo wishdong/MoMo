@@ -50,9 +50,11 @@ class LabelSmoothingLoss(nn.Module):
 
 def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda', 
                 use_swanlab=True, swanlab_project='Gesture-Recognition', subject=10, 
+                dataset='DB2', experiment_id='M0_base',
                 add_test_ratio=0.25, use_branch_loss=True,
                 use_disentangle=False, disentangle_config=None,
-                use_adaptive_fusion=False, adaptive_fusion_config=None):
+                use_adaptive_fusion=False, adaptive_fusion_config=None,
+                save_predictions=False):
     """
     端到端训练策略
     
@@ -72,12 +74,15 @@ def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda
         use_swanlab: 是否使用SwanLab监控
         swanlab_project: SwanLab项目名称
         subject: 受试者编号
+        dataset: 数据集名称 ('DB2', 'DB3', 'DB5', 'DB7')
+        experiment_id: 实验ID（用于文件命名，如'M0_base', 'HP_a0.3_b0.5'）
         add_test_ratio: 从测试集添加到训练集的比例
         use_branch_loss: 是否使用单模态分支损失（默认True）
         use_disentangle: 是否使用解纠缠损失（默认False）
         disentangle_config: 解纠缠配置对象（如果use_disentangle=True则必须提供）
         use_adaptive_fusion: 是否使用自适应融合损失（默认False）
         adaptive_fusion_config: 自适应融合配置对象（如果use_adaptive_fusion=True则必须提供）
+        save_predictions: 是否保存预测结果（用于后续聚合分析，默认False）
         
     Returns:
         best_weights: 最佳模型权重
@@ -102,7 +107,9 @@ def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda
         
         swanlab_config = {
             "model": f"MultimodalGestureNet{model_type}",
+            "dataset": dataset,
             "subject": subject,
+            "experiment_id": experiment_id,
             "num_epochs": num_epochs,
             "optimizer": "AdamW",
             "learning_rate": 0.0005,
@@ -157,13 +164,15 @@ def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda
         
         swanlab.init(
             project=swanlab_project,
-            experiment_name=f"GNN_S{subject}_{loss_strategy}_{model_type}_{timestamp}",
-            description=f"EMG+IMU多模态手势识别 - 受试者{subject} - 损失: {loss_strategy} - 解纠缠: {use_disentangle}",
+            experiment_name=f"{dataset}_S{subject}_{experiment_id}_{timestamp}",
+            description=f"{dataset} - 受试者{subject} - {experiment_id} - 损失: {loss_strategy}",
             config=swanlab_config
         )
     
-    # 损失函数：使用标签平滑防止过拟合
-    criterion = LabelSmoothingLoss(classes=50, smoothing=0.1).to(device)
+    # 损失函数：使用标签平滑防止过拟合（根据数据集自动确定类别数）
+    from config import get_dataset_config
+    num_classes = get_dataset_config(dataset)['num_class']
+    criterion = LabelSmoothingLoss(classes=num_classes, smoothing=0.1).to(device)
     
     # 解纠缠损失函数（如果启用）
     disentangle_loss_fn = None
@@ -171,8 +180,20 @@ def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda
         if disentangle_config is None:
             raise ValueError("use_disentangle=True 但未提供 disentangle_config")
         from models.disentangle_loss import DisentangleLoss
-        disentangle_loss_fn = DisentangleLoss(disentangle_config).to(device)
+        from config import get_dataset_config
+        
+        # 计算特征维度（用于ConditionalCLUB）
+        dataset_cfg = get_dataset_config(dataset)
+        emg_feature_dim = 32 * dataset_cfg['emg_channels']  # 动态
+        imu_feature_dim = 32 * dataset_cfg['imu_channels']  # 动态
+        
+        disentangle_loss_fn = DisentangleLoss(
+            disentangle_config, 
+            emg_feature_dim=emg_feature_dim,
+            imu_feature_dim=imu_feature_dim
+        ).to(device)
         print(f"✓ 解纠缠损失已启用")
+        print(f"  - 特征维度: EMG={emg_feature_dim}, IMU={imu_feature_dim}")
         print(f"  - 共享维度: {disentangle_config.d_shared}, 独特维度: {disentangle_config.d_private}")
         print(f"  - 权重: α={disentangle_config.alpha}, β={disentangle_config.beta}")
     
@@ -525,21 +546,14 @@ def train_model(model, dataloaders, num_epochs=500, precision=1e-8, device='cuda
     print('正在评估最佳模型...')
     model.load_state_dict(best_weights)
     
-    # 确定模型类型
-    if use_adaptive_fusion:
-        model_type = "adaptive_fusion_model"
-    elif use_disentangle:
-        model_type = "disentangle_model"
-    else:
-        model_type = "base_model"
-    
-    metrics = evaluate_best_model(model, dataloaders['val'], device, subject, model_type)
-    print(f'评估完成！结果已保存至 ./results/subject{subject}/{model_type}/')
+    metrics = evaluate_best_model(model, dataloaders['val'], device, subject, dataset, experiment_id,
+                                  save_predictions=save_predictions)
+    print(f'评估完成！结果已保存至 ./results/{dataset}/subject{subject}/{experiment_id}/')
     
     return best_weights
 
 
-def evaluate_best_model(model, dataloader, device, subject, model_type="base_model"):
+def evaluate_best_model(model, dataloader, device, subject, dataset='DB2', experiment_id='M0_base', save_predictions=False):
     """
     评估最佳模型的完整指标
     
@@ -553,7 +567,9 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
         dataloader: 验证集数据加载器
         device: 设备
         subject: 受试者编号
-        model_type: 模型类型 ("base_model" 或 "disentangle_model")
+        dataset: 数据集名称
+        experiment_id: 实验ID
+        save_predictions: 是否保存预测结果（用于后续聚合）
     
     Returns:
         metrics: 字典，包含所有评估指标
@@ -751,9 +767,17 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     imu_params = sum(p.numel() for p in model.imu_encoder.parameters()) + \
                  sum(p.numel() for p in model.imu_classifier.parameters())
     
-    # 融合参数（兼容基础模型和解纠缠模型）
-    if hasattr(model, 'emg_shared_encoder'):
-        # 解纠缠模型
+    # 融合参数（兼容所有模型类型）
+    if hasattr(model, 'fusion_classifier_adaptive'):
+        # 自适应融合模型
+        fusion_params = (sum(p.numel() for p in model.emg_shared_encoder.parameters()) +
+                        sum(p.numel() for p in model.emg_private_encoder.parameters()) +
+                        sum(p.numel() for p in model.imu_shared_encoder.parameters()) +
+                        sum(p.numel() for p in model.imu_private_encoder.parameters()) +
+                        sum(p.numel() for p in model.adaptive_fusion.parameters()) +
+                        sum(p.numel() for p in model.fusion_classifier_adaptive.parameters()))
+    elif hasattr(model, 'emg_shared_encoder'):
+        # 解纠缠模型（不含自适应融合）
         fusion_params = (sum(p.numel() for p in model.emg_shared_encoder.parameters()) +
                         sum(p.numel() for p in model.emg_private_encoder.parameters()) +
                         sum(p.numel() for p in model.imu_shared_encoder.parameters()) +
@@ -767,20 +791,26 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     # 2. 推理时间
     print("测量推理时间（预热+100次测量）...")
     
+    # 获取实际的通道数（动态）
+    from config import get_dataset_config
+    dataset_cfg = get_dataset_config(dataset)
+    emg_channels = dataset_cfg['emg_channels']
+    imu_channels = dataset_cfg['imu_channels']
+    
     # 准备一个batch的数据（使用较小的batch避免OOM）
     batch_size_test = 16  # 减小batch size避免显存不足（从64→16）
     sample_created = False
     try:
-        sample_emg = torch.randn(batch_size_test, 400, 12, 1).to(device)
-        sample_imu = torch.randn(batch_size_test, 400, 36, 1).to(device)
+        sample_emg = torch.randn(batch_size_test, 400, emg_channels, 1).to(device)
+        sample_imu = torch.randn(batch_size_test, 400, imu_channels, 1).to(device)
         sample_created = True
     except RuntimeError:
         # 如果16还不够，降到8
         print("⚠️  显存不足，降低batch size到8...")
         batch_size_test = 8
         try:
-            sample_emg = torch.randn(batch_size_test, 400, 12, 1).to(device)
-            sample_imu = torch.randn(batch_size_test, 400, 36, 1).to(device)
+            sample_emg = torch.randn(batch_size_test, 400, emg_channels, 1).to(device)
+            sample_imu = torch.randn(batch_size_test, 400, imu_channels, 1).to(device)
             sample_created = True
         except RuntimeError:
             print("⚠️  显存严重不足，跳过推理时间测量")
@@ -843,8 +873,8 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     flops = None
     try:
         from thop import profile
-        sample_emg_single = torch.randn(1, 400, 12, 1).to(device)
-        sample_imu_single = torch.randn(1, 400, 36, 1).to(device)
+        sample_emg_single = torch.randn(1, 400, emg_channels, 1).to(device)
+        sample_imu_single = torch.randn(1, 400, imu_channels, 1).to(device)
         flops, _ = profile(model, inputs=(sample_emg_single, sample_imu_single), verbose=False)
         flops = flops / 1e9  # 转为GFLOPs
         # 清理
@@ -856,7 +886,9 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     
     # ==================== 整理所有指标 ====================
     metrics = {
+        'dataset': dataset,
         'subject': subject,
+        'experiment_id': experiment_id,
         'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
         
         # 整体性能
@@ -932,8 +964,8 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     print(f"  FPS:             {metrics['model_efficiency']['fps']:.0f}")
     
     # ==================== 保存结果 ====================
-    # 创建目录结构: results/subject{id}/{model_type}/
-    results_dir = Path('./results') / f'subject{subject}' / model_type
+    # 创建目录结构: results/{dataset}/subject{id}/{experiment_id}/
+    results_dir = Path('./results') / dataset / f'subject{subject}' / experiment_id
     results_dir.mkdir(parents=True, exist_ok=True)
     
     # 保存JSON
@@ -942,16 +974,37 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
         json.dump(metrics, f, indent=4, ensure_ascii=False)
     print(f"\n💾 指标已保存至: {json_path}")
     
+    # ==================== 保存预测结果（用于聚合）====================
+    if save_predictions:
+        import pickle
+        predictions_data = {
+            'dataset': dataset,
+            'subject': subject,
+            'experiment_id': experiment_id,
+            'all_labels': all_labels,
+            'all_preds_fusion': all_preds_fusion,
+            'all_preds_emg': all_preds_emg,
+            'all_preds_imu': all_preds_imu,
+            'all_probs_fusion': all_probs_fusion,
+            'all_probs_emg': all_probs_emg,
+            'all_probs_imu': all_probs_imu,
+            'all_exercises': all_exercises
+        }
+        predictions_path = results_dir / 'predictions.pkl'
+        with open(predictions_path, 'wb') as f:
+            pickle.dump(predictions_data, f)
+        print(f"💾 预测结果已保存至: {predictions_path} (用于聚合分析)")
+    
     # ==================== 绘制混淆矩阵 ====================
     print("\n绘制混淆矩阵...")
     
-    def plot_confusion_matrix(labels, preds, title, filename):
+    def plot_confusion_matrix(labels, preds, title, filename, num_classes):
         cm = confusion_matrix(labels, preds)
         
         plt.figure(figsize=(12, 10))
         sns.heatmap(cm, cmap='Blues', fmt='d', cbar=True,
-                   xticklabels=range(50), yticklabels=range(50))
-        plt.title(f'{title}\nSubject {subject}', fontsize=14, pad=20)
+                   xticklabels=range(num_classes), yticklabels=range(num_classes))
+        plt.title(f'{title}\n{dataset} - Subject {subject}', fontsize=14, pad=20)
         plt.xlabel('Predicted Label', fontsize=12)
         plt.ylabel('True Label', fontsize=12)
         plt.tight_layout()
@@ -959,17 +1012,24 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
         plt.close()
         print(f"  已保存: {filename}")
     
+    # 获取实际的类别数（从数据集配置）
+    from config import get_dataset_config
+    num_classes = get_dataset_config(dataset)['num_class']
+    
     plot_confusion_matrix(all_labels, all_preds_fusion, 
                          'Confusion Matrix - Fusion Model',
-                         results_dir / 'confusion_matrix_fusion.png')
+                         results_dir / 'confusion_matrix_fusion.png',
+                         num_classes)
     
     plot_confusion_matrix(all_labels, all_preds_emg,
                          'Confusion Matrix - EMG Branch',
-                         results_dir / 'confusion_matrix_emg.png')
+                         results_dir / 'confusion_matrix_emg.png',
+                         num_classes)
     
     plot_confusion_matrix(all_labels, all_preds_imu,
                          'Confusion Matrix - IMU Branch',
-                         results_dir / 'confusion_matrix_imu.png')
+                         results_dir / 'confusion_matrix_imu.png',
+                         num_classes)
     
     # ==================== 生成LaTeX表格 ====================
     latex_path = results_dir / 'metrics_table.tex'
@@ -1008,4 +1068,337 @@ def evaluate_best_model(model, dataloader, device, subject, model_type="base_mod
     print("\n" + "=" * 70)
     
     return metrics
+
+
+def evaluate_aggregated_all_subjects(subjects, model_type, results_base_dir='./results'):
+    """
+    聚合所有受试者的评估结果，生成整体混淆矩阵和指标
+    
+    Args:
+        subjects: 受试者编号列表，例如 [1, 2, 3, ..., 40] 或 [10, 23, 36]
+        model_type: 模型类型 ("base_model", "disentangle_model", "adaptive_fusion_model")
+        results_base_dir: 结果基础目录
+    
+    Returns:
+        aggregated_metrics: 聚合的评估指标
+    """
+    import pickle
+    from pathlib import Path
+    
+    print("=" * 70)
+    print("📊 开始聚合所有受试者的评估结果...")
+    print("=" * 70)
+    
+    # 收集所有受试者的预测结果
+    all_labels = []
+    all_preds_fusion = []
+    all_preds_emg = []
+    all_preds_imu = []
+    all_probs_fusion = []
+    all_probs_emg = []
+    all_probs_imu = []
+    all_exercises = []
+    subject_ids = []
+    
+    loaded_subjects = []
+    missing_subjects = []
+    
+    for subject in subjects:
+        predictions_path = Path(results_base_dir) / f'subject{subject}' / model_type / 'predictions.pkl'
+        
+        if not predictions_path.exists():
+            missing_subjects.append(subject)
+            print(f"⚠️  受试者 S{subject} 的预测结果不存在: {predictions_path}")
+            continue
+        
+        try:
+            with open(predictions_path, 'rb') as f:
+                data = pickle.load(f)
+            
+            # 收集数据
+            all_labels.extend(data['all_labels'])
+            all_preds_fusion.extend(data['all_preds_fusion'])
+            all_preds_emg.extend(data['all_preds_emg'])
+            all_preds_imu.extend(data['all_preds_imu'])
+            all_probs_fusion.append(data['all_probs_fusion'])
+            all_probs_emg.append(data['all_probs_emg'])
+            all_probs_imu.append(data['all_probs_imu'])
+            all_exercises.extend(data['all_exercises'])
+            
+            # 记录样本来源
+            n_samples = len(data['all_labels'])
+            subject_ids.extend([subject] * n_samples)
+            
+            loaded_subjects.append(subject)
+            print(f"✓ 加载受试者 S{subject}: {n_samples} 个样本")
+            
+        except Exception as e:
+            missing_subjects.append(subject)
+            print(f"❌ 加载受试者 S{subject} 失败: {str(e)}")
+    
+    if len(loaded_subjects) == 0:
+        print("\n❌ 错误：没有成功加载任何受试者的预测结果！")
+        print("请确保已经训练并评估了模型，并使用 --save-predictions 参数保存了预测结果。")
+        return None
+    
+    # 转换为numpy数组
+    all_labels = np.array(all_labels)
+    all_preds_fusion = np.array(all_preds_fusion)
+    all_preds_emg = np.array(all_preds_emg)
+    all_preds_imu = np.array(all_preds_imu)
+    all_probs_fusion = np.concatenate(all_probs_fusion, axis=0)
+    all_probs_emg = np.concatenate(all_probs_emg, axis=0)
+    all_probs_imu = np.concatenate(all_probs_imu, axis=0)
+    all_exercises = np.array(all_exercises)
+    subject_ids = np.array(subject_ids)
+    
+    print("\n" + "=" * 70)
+    print(f"✓ 成功加载 {len(loaded_subjects)} 个受试者的预测结果")
+    print(f"  总样本数: {len(all_labels):,}")
+    print(f"  加载的受试者: {sorted(loaded_subjects)}")
+    if missing_subjects:
+        print(f"  缺失的受试者: {sorted(missing_subjects)}")
+    print("=" * 70)
+    
+    # ==================== 计算聚合指标 ====================
+    print("\n计算聚合性能指标...")
+    
+    def compute_metrics(labels, preds, probs=None):
+        """计算单个分支的指标"""
+        acc = (preds == labels).mean() * 100
+        
+        precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+            labels, preds, average='macro', zero_division=0
+        )
+        precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+            labels, preds, average='weighted', zero_division=0
+        )
+        
+        kappa = cohen_kappa_score(labels, preds)
+        
+        if probs is not None:
+            top3_correct = sum([1 if label in np.argsort(prob)[-3:] else 0 
+                               for label, prob in zip(labels, probs)])
+            top5_correct = sum([1 if label in np.argsort(prob)[-5:] else 0 
+                               for label, prob in zip(labels, probs)])
+            top3_acc = (top3_correct / len(labels)) * 100
+            top5_acc = (top5_correct / len(labels)) * 100
+            
+            try:
+                auroc = roc_auc_score(labels, probs, multi_class='ovr', average='macro')
+            except ValueError:
+                auroc = None
+        else:
+            top3_acc = None
+            top5_acc = None
+            auroc = None
+        
+        return {
+            'accuracy': float(acc),
+            'precision_macro': float(precision_macro * 100),
+            'recall_macro': float(recall_macro * 100),
+            'f1_macro': float(f1_macro * 100),
+            'precision_weighted': float(precision_weighted * 100),
+            'recall_weighted': float(recall_weighted * 100),
+            'f1_weighted': float(f1_weighted * 100),
+            'cohen_kappa': float(kappa),
+            'auroc': float(auroc) if auroc is not None else None,
+            'top3_accuracy': float(top3_acc) if top3_acc else None,
+            'top5_accuracy': float(top5_acc) if top5_acc else None
+        }
+    
+    metrics_fusion = compute_metrics(all_labels, all_preds_fusion, all_probs_fusion)
+    metrics_emg = compute_metrics(all_labels, all_preds_emg, all_probs_emg)
+    metrics_imu = compute_metrics(all_labels, all_preds_imu, all_probs_imu)
+    
+    # ==================== 计算分受试者统计 ====================
+    print("计算分受试者统计...")
+    
+    per_subject_metrics = {}
+    for subject in loaded_subjects:
+        mask = (subject_ids == subject)
+        subj_labels = all_labels[mask]
+        subj_preds_fusion = all_preds_fusion[mask]
+        subj_preds_emg = all_preds_emg[mask]
+        subj_preds_imu = all_preds_imu[mask]
+        
+        per_subject_metrics[f'S{subject}'] = {
+            'fusion_acc': float((subj_preds_fusion == subj_labels).mean() * 100),
+            'emg_acc': float((subj_preds_emg == subj_labels).mean() * 100),
+            'imu_acc': float((subj_preds_imu == subj_labels).mean() * 100),
+            'n_samples': int(len(subj_labels))
+        }
+    
+    # 计算受试者间的统计
+    fusion_accs = [m['fusion_acc'] for m in per_subject_metrics.values()]
+    emg_accs = [m['emg_acc'] for m in per_subject_metrics.values()]
+    imu_accs = [m['imu_acc'] for m in per_subject_metrics.values()]
+    
+    subject_statistics = {
+        'fusion_acc_mean': float(np.mean(fusion_accs)),
+        'fusion_acc_std': float(np.std(fusion_accs)),
+        'fusion_acc_min': float(np.min(fusion_accs)),
+        'fusion_acc_max': float(np.max(fusion_accs)),
+        'emg_acc_mean': float(np.mean(emg_accs)),
+        'emg_acc_std': float(np.std(emg_accs)),
+        'imu_acc_mean': float(np.mean(imu_accs)),
+        'imu_acc_std': float(np.std(imu_accs))
+    }
+    
+    # ==================== 整理所有指标 ====================
+    aggregated_metrics = {
+        'model_type': model_type,
+        'n_subjects': len(loaded_subjects),
+        'subjects': sorted(loaded_subjects),
+        'missing_subjects': sorted(missing_subjects) if missing_subjects else [],
+        'total_samples': int(len(all_labels)),
+        'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+        
+        'overall': metrics_fusion,
+        'emg_branch': metrics_emg,
+        'imu_branch': metrics_imu,
+        
+        'per_subject': per_subject_metrics,
+        'subject_statistics': subject_statistics
+    }
+    
+    # ==================== 打印结果 ====================
+    print("\n" + "=" * 70)
+    print("📊 聚合评估结果")
+    print("=" * 70)
+    
+    print(f"\n🎯 整体性能 (基于 {len(all_labels):,} 个样本):")
+    print(f"  Accuracy:          {metrics_fusion['accuracy']:.2f}%")
+    print(f"  Precision (Macro): {metrics_fusion['precision_macro']:.2f}%")
+    print(f"  Recall (Macro):    {metrics_fusion['recall_macro']:.2f}%")
+    print(f"  F1-Score (Macro):  {metrics_fusion['f1_macro']:.2f}%")
+    print(f"  Cohen's Kappa:     {metrics_fusion['cohen_kappa']:.4f}")
+    if metrics_fusion['auroc'] is not None:
+        print(f"  AUROC (Macro):     {metrics_fusion['auroc']:.4f}")
+    print(f"  Top-3 Accuracy:    {metrics_fusion['top3_accuracy']:.2f}%")
+    print(f"  Top-5 Accuracy:    {metrics_fusion['top5_accuracy']:.2f}%")
+    
+    print(f"\n🔬 各分支性能:")
+    print(f"  EMG分支:  Acc={metrics_emg['accuracy']:.2f}%, F1={metrics_emg['f1_macro']:.2f}%, Kappa={metrics_emg['cohen_kappa']:.4f}")
+    print(f"  IMU分支:  Acc={metrics_imu['accuracy']:.2f}%, F1={metrics_imu['f1_macro']:.2f}%, Kappa={metrics_imu['cohen_kappa']:.4f}")
+    
+    print(f"\n📈 受试者间统计 (基于 {len(loaded_subjects)} 个受试者):")
+    print(f"  Fusion准确率: {subject_statistics['fusion_acc_mean']:.2f}% ± {subject_statistics['fusion_acc_std']:.2f}%")
+    print(f"    范围: [{subject_statistics['fusion_acc_min']:.2f}%, {subject_statistics['fusion_acc_max']:.2f}%]")
+    print(f"  EMG准确率:    {subject_statistics['emg_acc_mean']:.2f}% ± {subject_statistics['emg_acc_std']:.2f}%")
+    print(f"  IMU准确率:    {subject_statistics['imu_acc_mean']:.2f}% ± {subject_statistics['imu_acc_std']:.2f}%")
+    
+    # ==================== 保存结果 ====================
+    aggregated_dir = Path(results_base_dir) / 'aggregated' / model_type
+    aggregated_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 保存JSON
+    json_path = aggregated_dir / 'aggregated_metrics.json'
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(aggregated_metrics, f, indent=4, ensure_ascii=False)
+    print(f"\n💾 聚合指标已保存至: {json_path}")
+    
+    # ==================== 绘制聚合混淆矩阵 ====================
+    print("\n绘制聚合混淆矩阵...")
+    
+    def plot_aggregated_confusion_matrix(labels, preds, title, filename):
+        cm = confusion_matrix(labels, preds)
+        
+        plt.figure(figsize=(14, 12))
+        sns.heatmap(cm, cmap='Blues', fmt='d', cbar=True,
+                   xticklabels=range(50), yticklabels=range(50))
+        
+        # 添加样本数信息
+        total_samples = len(labels)
+        n_subjects = len(loaded_subjects)
+        plt.title(f'{title}\n{n_subjects} Subjects, {total_samples:,} Samples', 
+                 fontsize=14, pad=20)
+        plt.xlabel('Predicted Label', fontsize=12)
+        plt.ylabel('True Label', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"  已保存: {filename}")
+    
+    plot_aggregated_confusion_matrix(
+        all_labels, all_preds_fusion,
+        'Aggregated Confusion Matrix - Fusion Model',
+        aggregated_dir / 'confusion_matrix_fusion.png'
+    )
+    
+    plot_aggregated_confusion_matrix(
+        all_labels, all_preds_emg,
+        'Aggregated Confusion Matrix - EMG Branch',
+        aggregated_dir / 'confusion_matrix_emg.png'
+    )
+    
+    plot_aggregated_confusion_matrix(
+        all_labels, all_preds_imu,
+        'Aggregated Confusion Matrix - IMU Branch',
+        aggregated_dir / 'confusion_matrix_imu.png'
+    )
+    
+    # ==================== 绘制归一化混淆矩阵（可选）====================
+    print("\n绘制归一化混淆矩阵（按行归一化）...")
+    
+    def plot_normalized_confusion_matrix(labels, preds, title, filename):
+        cm = confusion_matrix(labels, preds)
+        # 按行归一化（每一行代表真实类别的预测分布）
+        cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        
+        plt.figure(figsize=(14, 12))
+        sns.heatmap(cm_normalized, cmap='Blues', fmt='.2f', cbar=True,
+                   xticklabels=range(50), yticklabels=range(50),
+                   vmin=0, vmax=1)
+        
+        total_samples = len(labels)
+        n_subjects = len(loaded_subjects)
+        plt.title(f'{title} (Row-Normalized)\n{n_subjects} Subjects, {total_samples:,} Samples', 
+                 fontsize=14, pad=20)
+        plt.xlabel('Predicted Label', fontsize=12)
+        plt.ylabel('True Label', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"  已保存: {filename}")
+    
+    plot_normalized_confusion_matrix(
+        all_labels, all_preds_fusion,
+        'Aggregated Confusion Matrix - Fusion Model',
+        aggregated_dir / 'confusion_matrix_fusion_normalized.png'
+    )
+    
+    # ==================== 生成LaTeX表格 ====================
+    latex_path = aggregated_dir / 'aggregated_metrics_table.tex'
+    with open(latex_path, 'w', encoding='utf-8') as f:
+        f.write("% 聚合模型性能表格\n")
+        f.write("\\begin{table}[htbp]\n")
+        f.write("\\centering\n")
+        f.write(f"\\caption{{Aggregated Performance across {len(loaded_subjects)} Subjects}}\n")
+        f.write("\\begin{tabular}{lcccc}\n")
+        f.write("\\hline\n")
+        f.write("Branch & Acc (\\%) & F1 (\\%) & Kappa & Samples \\\\\n")
+        f.write("\\hline\n")
+        f.write(f"EMG    & {metrics_emg['accuracy']:.2f} & "
+                f"{metrics_emg['f1_macro']:.2f} & "
+                f"{metrics_emg['cohen_kappa']:.4f} & {len(all_labels):,} \\\\\n")
+        f.write(f"IMU    & {metrics_imu['accuracy']:.2f} & "
+                f"{metrics_imu['f1_macro']:.2f} & "
+                f"{metrics_imu['cohen_kappa']:.4f} & {len(all_labels):,} \\\\\n")
+        f.write(f"Fusion & {metrics_fusion['accuracy']:.2f} & "
+                f"{metrics_fusion['f1_macro']:.2f} & "
+                f"{metrics_fusion['cohen_kappa']:.4f} & {len(all_labels):,} \\\\\n")
+        f.write("\\hline\n")
+        f.write("\\multicolumn{5}{l}{\\textit{Subject Statistics (Fusion):}} \\\\\n")
+        f.write(f"Mean $\\pm$ Std & {subject_statistics['fusion_acc_mean']:.2f} $\\pm$ {subject_statistics['fusion_acc_std']:.2f} & - & - & {len(loaded_subjects)} subjects \\\\\n")
+        f.write("\\hline\n")
+        f.write("\\end{tabular}\n")
+        f.write("\\end{table}\n")
+    print(f"📄 LaTeX表格已保存至: {latex_path}")
+    
+    print("\n" + "=" * 70)
+    print(f"✅ 聚合评估完成！结果保存在: {aggregated_dir}")
+    print("=" * 70)
+    
+    return aggregated_metrics
 

@@ -16,14 +16,14 @@ import argparse
 import numpy as np
 import torch
 
-from config import EMG_Configs, IMU_Configs, DisentangleConfigs, AdaptiveFusionConfigs
+from config import EMG_Configs, IMU_Configs, DisentangleConfigs, AdaptiveFusionConfigs, get_dataset_config
 from models import (
     MultimodalGestureNet, 
     MultimodalGestureNetWithDisentangle,
     MultimodalGestureNetWithAdaptiveFusion
 )
 from data_loader import load_dataloader_for_both
-from trainer import train_model
+from trainer import train_model, evaluate_aggregated_all_subjects
 
 
 def set_seed(seed):
@@ -41,12 +41,73 @@ def set_seed(seed):
 def main(args):
     """主训练流程"""
     
+    # ==================== 聚合评估模式 ====================
+    if args.aggregate_results:
+        print("=" * 50)
+        print("🔄 聚合评估模式")
+        print("=" * 50)
+        
+        # 解析受试者列表
+        if args.aggregate_subjects == 'all':
+            # 根据数据集自动获取所有可用受试者
+            dataset_config = get_dataset_config(args.dataset)
+            if 'available_subjects' in dataset_config:
+                subjects = dataset_config['available_subjects']
+            else:
+                # 回退到1到num_subjects
+                subjects = list(range(1, dataset_config['num_subjects'] + 1))
+        else:
+            # 解析指定的受试者，例如 "1,2,3" 或 "1-10"
+            subjects = []
+            for part in args.aggregate_subjects.split(','):
+                if '-' in part:
+                    start, end = map(int, part.split('-'))
+                    subjects.extend(range(start, end + 1))
+                else:
+                    subjects.append(int(part))
+        
+        print(f"将聚合 {len(subjects)} 个受试者的结果: {subjects}")
+        
+        # 确定模型类型
+        if args.use_adaptive_fusion:
+            model_type = "adaptive_fusion_model"
+        elif args.use_disentangle:
+            model_type = "disentangle_model"
+        else:
+            model_type = "base_model"
+        
+        print(f"模型类型: {model_type}")
+        
+        # 执行聚合评估
+        aggregated_metrics = evaluate_aggregated_all_subjects(
+            subjects=subjects,
+            model_type=model_type,
+            results_base_dir='./results'
+        )
+        
+        if aggregated_metrics is not None:
+            print("\n✅ 聚合评估完成！")
+        else:
+            print("\n❌ 聚合评估失败！")
+        
+        return
+    
+    # ==================== 正常训练模式 ====================
     # 设置随机种子
     set_seed(args.seed)
     
     # 设置设备
     device = f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu'
     print(f"使用设备: {device}")
+    
+    # 获取数据集配置
+    dataset_config = get_dataset_config(args.dataset)
+    print("=" * 50)
+    print(f"数据集: {dataset_config['name']}")
+    print(f"  手势类别: {dataset_config['num_class']}")
+    print(f"  EMG通道: {dataset_config['emg_channels']}")
+    print(f"  IMU通道: {dataset_config['imu_channels']}")
+    print(f"  受试者数: {dataset_config['num_subjects']}")
     
     # 加载数据
     print("=" * 50)
@@ -68,7 +129,10 @@ def main(args):
     print("=" * 50)
     print("构建模型...")
     
-    # 初始化配置
+    # 初始化配置（根据数据集创建）
+    emg_configs = EMG_Configs(dataset=args.dataset)
+    imu_configs = IMU_Configs(dataset=args.dataset)
+    
     disentangle_config = None
     adaptive_fusion_config = None
     
@@ -85,7 +149,7 @@ def main(args):
             adaptive_fusion_config.lambda_balance = args.lambda_balance
         
         model = MultimodalGestureNetWithAdaptiveFusion(
-            IMU_Configs, EMG_Configs,
+            imu_configs, emg_configs,
             d_shared=args.d_shared,
             d_private=args.d_private,
             dropout=DisentangleConfigs.dropout,
@@ -109,7 +173,7 @@ def main(args):
     elif args.use_disentangle:
         # 只使用解纠缠模型
         model = MultimodalGestureNetWithDisentangle(
-            IMU_Configs, EMG_Configs,
+            imu_configs, emg_configs,
             d_shared=args.d_shared,
             d_private=args.d_private,
             dropout=DisentangleConfigs.dropout
@@ -128,7 +192,7 @@ def main(args):
         disentangle_config.d_private = args.d_private
     else:
         # 使用原有模型
-        model = MultimodalGestureNet(IMU_Configs, EMG_Configs)
+        model = MultimodalGestureNet(imu_configs, emg_configs)
         print(f"✓ 使用基础模型（不使用解纠缠）")
     
     model = model.to(device)
@@ -158,31 +222,28 @@ def main(args):
         use_swanlab=args.use_swanlab,
         swanlab_project=args.swanlab_project,
         subject=args.s,
+        dataset=args.dataset,
+        experiment_id=args.experiment_id,
         add_test_ratio=args.ratio,
         use_branch_loss=args.use_branch_loss,
         use_disentangle=args.use_disentangle or args.use_adaptive_fusion,  # 自适应融合也需要解纠缠
         disentangle_config=disentangle_config,
         use_adaptive_fusion=args.use_adaptive_fusion,
-        adaptive_fusion_config=adaptive_fusion_config
+        adaptive_fusion_config=adaptive_fusion_config,
+        save_predictions=args.save_predictions  # 新增：控制是否保存预测结果
     )
     
     # 保存模型
     print("=" * 50)
     print("保存模型...")
     
-    # 创建目录结构: weights/subject{id}/
-    if args.use_adaptive_fusion:
-        model_type = "adaptive_fusion_model"
-    elif args.use_disentangle:
-        model_type = "disentangle_model"
-    else:
-        model_type = "base_model"
-        
-    subject_dir = os.path.join(args.save_dir, f'subject{args.s}')
+    # 创建目录结构: weights/{dataset}/subject{id}/
+    # 使用experiment_id作为文件名
+    subject_dir = os.path.join(args.save_dir, args.dataset, f'subject{args.s}')
     os.makedirs(subject_dir, exist_ok=True)
     
-    # 保存路径: weights/subject{id}/{model_type}_best.pt
-    save_path = os.path.join(subject_dir, f'{model_type}_best.pt')
+    # 保存路径: weights/{dataset}/subject{id}/{experiment_id}.pt
+    save_path = os.path.join(subject_dir, f'{args.experiment_id}.pt')
     torch.save(best_weights, save_path)
     print(f"模型已保存至: {save_path}")
     
@@ -193,14 +254,21 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EMG-IMU多模态手势识别训练')
     
-    # 数据参数
+    # 数据集参数
+    parser.add_argument('--dataset', type=str, default='DB2', 
+                        choices=['DB2', 'DB3', 'DB5', 'DB7'],
+                        help='数据集名称')
     parser.add_argument('--s', type=int, default=10, 
-                        help='受试者编号 (10, 23, 36)')
+                        help='受试者编号')
     parser.add_argument('--data_dir', type=str, 
-                        default='/home/mlsnrs/data/wrj/MoMo/Momo/processed_data',
-                        help='数据目录（包含S{subject}_train.h5和S{subject}_test.h5）')
-    parser.add_argument('--ratio', type=float, default=0.4,
+                        default='/home/xuweishi/KBS25/MoMo/Momo/processed_data',
+                        help='数据根目录（包含DB2/, DB3/, DB5/, DB7/子目录）')
+    parser.add_argument('--ratio', type=float, default=0.1,
                         help='从测试集中取多少比例加入训练集 (0-1, 默认0.4即40%%)')
+    
+    # 实验标识参数
+    parser.add_argument('--experiment_id', type=str, default=None,
+                        help='实验ID（如M0_base, D1_private_only, HP_a0.3_b0.5等），用于文件命名')
     
     # 训练参数
     parser.add_argument('--batch_size', type=int, default=64, 
@@ -221,8 +289,8 @@ if __name__ == "__main__":
                         help='模型保存目录')
     
     # SwanLab监控参数
-    parser.add_argument('--use_swanlab', action='store_true', default=True,
-                        help='是否使用SwanLab监控')
+    parser.add_argument('--use_swanlab', action='store_true', default=False,
+                        help='是否使用SwanLab监控（默认关闭，批量实验时建议关闭）')
     parser.add_argument('--swanlab_project', type=str, default='Gesture-Recognition',
                         help='SwanLab项目名称')
     
@@ -254,7 +322,33 @@ if __name__ == "__main__":
     parser.add_argument('--lambda-balance', type=float, default=None,
                         help='权重平衡损失权重（默认使用config中的值）')
     
+    # 聚合评估参数
+    parser.add_argument('--save-predictions', action='store_true', default=False,
+                        help='是否保存预测结果（用于后续聚合分析）')
+    parser.add_argument('--aggregate-results', action='store_true', default=False,
+                        help='聚合评估模式：加载已训练模型的预测结果，生成聚合混淆矩阵')
+    parser.add_argument('--aggregate-subjects', type=str, default='all',
+                        help='要聚合的受试者，例如 "all", "1,2,3", "1-10" （默认all表示1-40）')
+    
     args = parser.parse_args()
+    
+    # 自动生成experiment_id（如果未指定）
+    if args.experiment_id is None:
+        if args.use_adaptive_fusion:
+            args.experiment_id = "M3_full"
+        elif args.use_disentangle:
+            args.experiment_id = "M1_disentangle"
+        else:
+            args.experiment_id = "M0_base"
+        
+        # 如果有自定义alpha/beta，添加到ID中
+        if args.alpha is not None or args.beta is not None:
+            alpha_val = args.alpha if args.alpha is not None else 0.5
+            beta_val = args.beta if args.beta is not None else 0.5
+            args.experiment_id += f"_a{alpha_val}_b{beta_val}"
+    
+    # 更新data_dir为具体数据集路径
+    args.data_dir = os.path.join(args.data_dir, args.dataset)
     
     main(args)
 

@@ -1,25 +1,92 @@
 """
 配置文件：定义EMG和IMU两种模态的模型配置
+支持多数据集配置（DB2, DB3, DB5, DB7）
 """
 
+# ==================== 数据集配置 ====================
+DATASET_CONFIGS = {
+    'DB2': {
+        'name': 'NinaPro DB2',
+        'num_class': 50,
+        'emg_channels': 12,
+        'imu_channels': 36,
+        'num_subjects': 40,
+        'available_subjects': list(range(1, 41)),  # S1-S40
+        'sampling_rate': 2000,
+        'description': '40 intact subjects'
+    },
+    'DB3': {
+        'name': 'NinaPro DB3',
+        'num_class': 50,
+        'emg_channels': 12,
+        'imu_channels': 36,
+        'num_subjects': 6,
+        'available_subjects': [2, 4, 5, 6, 9, 11],  # 实际可用的受试者
+        'sampling_rate': 2000,
+        'description': '6 amputated subjects (processed)'
+    },
+    'DB5': {
+        'name': 'NinaPro DB5',
+        'num_class': 53,
+        'emg_channels': 16,
+        'imu_channels': 3,  # 只有加速度计，没有陀螺仪
+        'num_subjects': 10,
+        'available_subjects': list(range(1, 11)),  # S1-S10
+        'sampling_rate': 2000,
+        'description': '10 intact subjects, 16 EMG + 3 IMU channels'
+    },
+    'DB7': {
+        'name': 'NinaPro DB7',
+        'num_class': 41,
+        'emg_channels': 12,
+        'imu_channels': 36,
+        'num_subjects': 11,
+        'available_subjects': [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],  # 实际可用的受试者
+        'sampling_rate': 2000,
+        'description': '11 subjects (processed)'
+    }
+}
+
+
+def get_dataset_config(dataset_name):
+    """
+    获取数据集配置
+    
+    Args:
+        dataset_name: 数据集名称 ('DB2', 'DB3', 'DB5', 'DB7')
+    
+    Returns:
+        dataset_config: 数据集配置字典
+    """
+    if dataset_name not in DATASET_CONFIGS:
+        raise ValueError(f"未知数据集: {dataset_name}. 支持的数据集: {list(DATASET_CONFIGS.keys())}")
+    return DATASET_CONFIGS[dataset_name]
+
+
 class EMG_Configs:
-    """EMG信号配置"""
-    num_class = 50              # 手势分类数量
-    channels = [400, 128, 64, 32]  # 各层通道数（简化：256→128, 128→64, 64→32）
-    enc_in = 12                 # EMG传感器通道数
-    indicator = 2               # GNN类型（2表示使用自适应注意力机制）
-    dropout = 0.5              # Dropout率（适度降低，配合简化模型）
-    modality = 'emg'           # 模态类型
+    """EMG信号配置（动态，根据数据集调整）"""
+    def __init__(self, dataset='DB2'):
+        dataset_config = get_dataset_config(dataset)
+        self.dataset = dataset
+        self.num_class = dataset_config['num_class']
+        self.channels = [400, 128, 64, 32]  # 各层通道数
+        self.enc_in = dataset_config['emg_channels']
+        self.indicator = 2               # GNN类型（2表示使用自适应注意力机制）
+        self.dropout = 0.5              # Dropout率
+        self.modality = 'emg'           # 模态类型
 
 
 class IMU_Configs:
-    """IMU信号配置（加速度计+陀螺仪）"""
-    num_class = 50              # 手势分类数量
-    channels = [400, 128, 64, 32]  # 各层通道数（第一层400必须匹配时间步长）
-    enc_in = 36                 # IMU传感器通道数（12个传感器 × 3轴）
-    indicator = 2               # GNN类型
-    dropout = 0.5              # Dropout率（适度降低，配合简化模型）
-    modality = 'imu'           # 模态类型
+    """IMU信号配置（动态，根据数据集调整）"""
+    def __init__(self, dataset='DB2'):
+        dataset_config = get_dataset_config(dataset)
+        self.dataset = dataset
+        self.num_class = dataset_config['num_class']
+        self.channels = [400, 128, 64, 32]  # 各层通道数
+        self.enc_in = dataset_config['imu_channels']
+        self.indicator = 2               # GNN类型
+        self.dropout = 0.5              # Dropout率
+        self.modality = 'imu'           # 模态类型
 
 
 class DisentangleConfigs:
